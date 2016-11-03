@@ -1,0 +1,6 @@
+#!/usr/bin/env python
+
+import notify
+import config
+import logger
+print notify.hello()

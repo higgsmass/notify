@@ -1,0 +1,16 @@
+---
+- name: dev-playbook | Python development enviroment setup
+  hosts: all
+  sudo: yes
+  roles: 
+    - { role: "pyenv" }
+  vars:
+    - pyenv_users:
+      - name: venkat
+        password: "$1$salty$li5TXAa2G6oxHTDkqx3Dz/" # passpass
+        authorized: []
+    - pyenv_directories:
+      - dir_01_test
+      - dir_02_test
+      - { name: public, mode: 755 }
+

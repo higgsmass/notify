@@ -1,0 +1,88 @@
+---
+# tasks file for pyenv
+
+# Creates group for dev users.
+- name: PyEnv | Create user group
+  group: name={{ pyenv_group_name }}
+         state=present
+
+#- name: PyEnv | Install vsftp server
+#  yum: name=vsftpd state=latest
+#  notify: SFTP Server | Restart vsftpd
+
+
+## enable EPEL repo
+- name: PyEnv | Install EPEL repo
+  yum: 
+    name: "{{ epel_repo_url }}" 
+    state: present
+  tags:
+    - epel
+
+- name: PyEnv | Import EPEL gpg key
+  rpm_key:
+    key: "{{ epel_repo_gpg_key_path }}"
+    state: present
+  tags:
+    - epel
+
+- name: Install packages required to run the examples
+  yum: name={{ item }} state=installed
+  with_items:
+    - git
+    - python-pip
+
+#- name: Install packages required to run the examples
+#  yum: name=python-pip state=installed
+
+#- name: upgrade all packages
+#  yum: name=* state=latest
+
+- name: install required python dependencies
+  sudo: true
+  pip: requirements=/vagrant/requirements.txt executable=pip
+
+
+
+
+# Create each user with home directory on the correct patition, and add to group.
+- name: PyEnv | Create pyenv users
+  user: name={{ item.name }}
+        groups={{ pyenv_group_name }}
+        home="{{ pyenv_home_partition }}/{{ item.name }}"
+        state=present
+  with_items: pyenv_users
+
+# A working chrooted SFTP setup requires root:sftgroup ownership of a user's home directory.
+- name: PyEnv | Correct ownership and permission of home directories
+  file: path="{{ pyenv_home_partition }}/{{ item.name }}"
+        owner=root
+        group={{ pyenv_group_name }}
+        mode="0750"
+  with_items: pyenv_users
+
+# Install all relevant public keys.
+- name: PyEnv | Install public keys
+  authorized_key: user={{ item.0.name }} key='{{ lookup('file', item.1) }}'
+  with_subelements:
+    - pyenv_users
+    - authorized
+
+# Update user passwords, if they were specified.
+- name: PyEnv | Update user passwords
+  user: name={{ item.name }}
+        password={{ item.password }}
+  with_items: pyenv_users
+  when: item.password is defined and item.password != ""
+
+# Create directories for users. Optional, but recommended.
+- name: PyEnv | Create directories
+  file: path="{{ pyenv_home_partition }}/{{ item[0].name }}/{{ item[1].name | default(item[1]) }}"
+        owner={{ item[0].name }}
+        group={{ item[0].name }}
+        mode="{{ item[1].mode | default(0750) }}"
+        state=directory
+  with_nested:
+    - pyenv_users
+    - pyenv_directories
+

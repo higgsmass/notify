@@ -1,0 +1,14 @@
+from unittest import TestCase
+
+import notify
+
+class TestCookie(TestCase):
+
+    def test_is_string(self):
+        s = notify.hello()
+        self.assertTrue(isinstance(s, basestring))
+
+
+    def test_basic(self):
+        from notify.command_line import main
+        main()

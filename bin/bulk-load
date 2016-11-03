@@ -1,0 +1,24 @@
+#!/bin/bash
+
+"exec" "python" "-u" "-Wignore" "$0" "$@"
+
+from notify import loader
+import argparse
+
+if __name__ == "__main__":
+
+    opt = argparse.ArgumentParser()
+    ## required arguments
+    req = opt.add_argument_group('required named arguments')
+    req.add_argument ("-c", "--config", dest="conf", help="Path to configuration file" , required=True)
+    req.add_argument ("-s", "--site", dest="blsite", help="bulk load site: must be one of the following GHS|MUSC|PH|SRHS", required=True )
+    req.add_argument ("-b", "--batch-size", dest="blsize", type=int, help="bulk load batch size: must be larger than zero",required=True )
+
+    opt.add_argument("-l", "--log", dest="logLevel", choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL', 'VERBOSE'], default='INFO', help="Set the logging level")
+    opt.add_argument("-p", "--print", dest="show", default=False, action="store_true", help="Print configuration")
+    args = opt.parse_args()
+
+    dr = loader.loader(args)
+    dr.run()
+
+
