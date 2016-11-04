@@ -1,0 +1,3 @@
+pbr
+nose
+sphinx_rtd_theme

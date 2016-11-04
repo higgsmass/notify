@@ -1,0 +1,9 @@
+---
+# handlers file for scsqc_sftp
+#- name: SFTP-Server | Restart sshd
+#  service: name=sshd
+#           state=restarted
+
+#- name: SFTP Server | Restart vsftpd
+#  service: name=vsftpd
+#           state=restarted
