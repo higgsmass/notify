@@ -8,7 +8,7 @@
 import ConfigParser
 import StringIO
 import csv, os, re
-
+import sys
 # ----------------------------------------------------------------------------------------------------
 ## instantiate postgres style dialect
 class pgDialect(csv.Dialect):
@@ -40,8 +40,10 @@ def getConfigParser(iniPath):
 # Read configuration (ConfigParser) object and convert to python dictionary
 def getConfigSectionMap(config, section):
   cfgmap = {}
+
   if not config:
     return cfgmap
+
   options = config.options(section)
   for opt in options:
     try:

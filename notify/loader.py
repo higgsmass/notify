@@ -5,40 +5,49 @@ import csv
 import time
 import glob
 import stat
+
 import fnmatch
 import logging
 import datetime
+import tempfile
 import subprocess
+import collections
 
 ## local imports
 import config
 import logger
-
-
+import goose
+import notify
 
 def os_system_command(cmd, m_env=None):
     res = None
-    out = None
+    out = ''
     err = None
+
     try:
         if m_env == None:
             p = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         else:
             p = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env = m_env)
-        out, err = p.communicate()
-        yield (out, err, p)
+
+        for line in iter(p.stdout.readline, b''):
+            out += line
+            sys.stdout.write(line)
+        err = p.communicate()[1]
         p.wait()
     except OSError:
         sys.exit(p.returncode)
 
-
+    return (out, err, p)
 
 
 class loader(object):
 
-    def __init__(self, options):
+    def __init__(self, parser):
 
-        self.options = options
+        self.parser = parser
+        self.heading = "bulk_load"
+        self.options = parser.parse_args(sys.argv[1:])
         self.config_path = None
         self.config_vars = None
 
@@ -52,39 +61,41 @@ class loader(object):
         self.std_out = None
         self.std_err = None
 
-        ## parse log-file and extract parameters -- begin vars
-        self.parse_lines = None
-        #self.pat_common = [ r'(?P<time>.+)', r'\[(?P<process>\S+)\]', r'(?P<status>Line: [0-9]+\S+%s .*\-)' % self.load_opts['log_level'], r'(?P<message>.*)' ]
-        #self.pat_fir = [ r'(?P<time>.+)', r'\[(?P<process>\S+)\]', r'(?P<status>Line: [0-9]+\S+INFO.*\-)', r'(?P<message>\S+Processing Errors.*)' ]
-        ## parse log-file and extract parameters -- end vars
+        self.batch_create_data = dict()
 
-        sys.stderr.write("\n--> Reading configuration file: %s\n" % options.conf)
+        sys.stderr.write("\n--> Reading configuration file: %s\n" % self.options.conf)
         try:
-            with open (options.conf, 'r') as f:
+            with open (self.options.conf, 'r') as f:
                 f.close()
-            self.config_path = options.conf
+            self.config_path = self.options.conf
             self.config_vars = config.getConfigParser(self.config_path)
         except IOError, err:
             sys.stderr.write('ERROR: %s\n' % str(err))
             traceback.print_exc()
             sys.exit(err.errno)
 
-        self.load_opts = config.getConfigSectionMap( self.config_vars, "bulk_load" )
+        self.load_opts = config.getConfigSectionMap( self.config_vars, self.heading )
         self.log = logger.logInit(self.options.logLevel, self.load_opts['log_path'], type(self).__name__)
 
         if self.options.show:
-            self.printconfig()
+            self.printconfig(True)
 
+        self.gapi = goose.sheets(parser, self.config_vars, self.log)
+        self.service = self.gapi.service_start()
 
-    def printconfig(self):
-        sec_done = []
-        for item in self.config_vars.sections():
-            qq = config.getConfigSectionMap(self.config_vars, item)
-            sys.stderr.write('\n----------------------[ %s ]----------------------\n' % item)
-            for j in qq:
-                if j not in sec_done:
-                    sys.stderr.write( '%-25s: %s\n' % (j, qq[j]))
-                    sec_done.append(j)
+        self.notifier = notify.notify(parser, self.config_vars, self.log)
+
+    def printconfig(self, defaults):
+        if defaults:
+            sys.stderr.write('\n----------------------[ DEFAULT ]----------------------\n')
+            for k,v in self.config_vars.defaults().iteritems():
+                sys.stderr.write( '%-25s: %s\n' % (k, v))
+
+        qq = config.getConfigSectionMap(self.config_vars, self.heading)
+        sys.stderr.write('\n----------------------[ %s ]----------------------\n' % self.heading)
+        for j in qq:
+            if j not in self.config_vars.defaults().keys():
+                sys.stderr.write( '%-25s: %s\n' % (j, qq[j]))
 
 
     def capture_env(self, env_vars):
@@ -125,12 +136,11 @@ class loader(object):
         cmd.append(str(self.options.blsize))
 
         self.log.info(' '.join(cmd))
-        for (self.std_out, err, p) in os_system_command( ' '.join(cmd), self.run_env):
-            pass
+        (self.std_out, err, p) =  os_system_command( ' '.join(cmd), self.run_env)
         if not p.returncode == 0:
             self.log.error(err)
             sys.exit(p.returncode)
-        self.get_batch_status()
+        self.create_batch_status()
 
 
     def validate(self):
@@ -224,7 +234,7 @@ class loader(object):
         self.capture_env(env_vars)
 
 
-    def get_batch_status(self):
+    def create_batch_status(self):
         pat_base = [ r'(?P<time>.+)', r'\[(?P<process>\S+)\]', r'(?P<status>Line: [0-9]+\s+INFO\s+\-)' ]
         ## regex patterns to extract from output
 
@@ -255,7 +265,6 @@ class loader(object):
                 'end_date':[ re.compile(r'\s+'.join(pat_finish).replace('time', 'end_date',1)), False ]
                 }
 
-        extracts = dict()
 
         for line in self.std_out.split('\n'):
             for pat in patterns:
@@ -265,39 +274,64 @@ class loader(object):
                 if mat_grp:
                     res = mat_grp.groupdict()
                 if res:
-                    if pat in extracts and multiline:
+                    if pat in self.batch_create_data and multiline:
                         ## assume integer addition and try to add the two
                         self.log.warn('already exists: %s' % line)
                         try:
-                            res[pat] = str( int(extracts[pat][1][pat]) + int(res[pat]) )
+                            res[pat] = str( int(self.batch_create_data[pat][1][pat]) + int(res[pat]) )
                         except ValueError:
                             pass
                     else:
-                        extracts.update( { pat:[line, res]})
-        for i in extracts:
-            print i, extracts[i][1][i]
+                        self.batch_create_data.update( { pat:[line, res]})
 
-    def match_pattern(self):
-        pat1 = re.compile(r'\s+'.join(self.pat_common))
-        try:
-            with open(self.load_opts['bl_logpath']) as f:
-                self.parse_lines = itertools.islice(f, self.init_line, None)
-                for line in self.parse_lines:
-                    mat_grp = pat1.match(line)
-                    if mat_grp:
-                        res = mat_grp.groupdict()
-                        print res
-                    else:
-                        res = re.findall(r'\s+'.join(self.pat_extra), line, re.MULTILINE)
-                        print res
 
-        except IOError as err:
-            self.log.error( 'I/O error {0}" {1}'.format(e.errno, e.strerror))
+    def batch_create_status(self, append = True):
+
+        self.bcs_opts = config.getConfigSectionMap( self.config_vars, 'create-batch' )
+
+        upcols = self.bcs_opts['column_updates'].split('|')
+        mpcols = self.bcs_opts['column_map'].split('|')
+
+        result = self.service.spreadsheets().values().get(
+                    spreadsheetId = self.gapi.get_id(), range = self.bcs_opts['column_range']).execute()
+        row = result.get('values')
+
+        keys = row[0]
+
+
+        status_row = collections.OrderedDict()
+        for i in keys:
+            status_row[i] = ''
+
+        for i in range(0, len(upcols)):
+            key = mpcols[i]
+            head = upcols[i]
+            status_row[head] = self.batch_create_data[key][1][key]
+
+        data = [ v for k,v in status_row.iteritems() ]
+
+        body_append = {
+                'values': [ data ]
+                }
+
+        result = self.service.spreadsheets().values().append(
+                 spreadsheetId = self.gapi.get_id(), valueInputOption='USER_ENTERED',
+                 range = self.bcs_opts['column_range'], insertDataOption='INSERT_ROWS',
+                 body=body_append).execute()
+
+
+        msg_body = 'batch %s completed at %s [P|F|T] = [%s|%s|%s]' % ( self.batch_create_data['batch'][1]['batch'] ,
+                self.batch_create_data['end_date'][1]['end_date'], self.batch_create_data['succs'][1]['succs'],
+                self.batch_create_data['fails'][1]['fails'], self.batch_create_data['procs'][1]['procs']
+                )
+
+        self.notifier.message('batch_create_notify', msg_body)
+
 
 
     def run(self):
-        self.printconfig()
         self.validate()
         self.execute()
+        self.batch_create_status()
         self.log.info('Processing complete')
 
