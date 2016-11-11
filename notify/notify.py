@@ -51,8 +51,8 @@ class notify(object):
 
         if msg_header in self.incidents.keys() and self.incidents[msg_header] != None:
             try:
-                message = self.client.messages.create( body= msg_body, to = str(self.conf_opts['phone_number']), from_= str(self.conf_opts['twilio_number']) )
-                self.log.info('%s:%s message sent to recipient, body = \"%s\"' % (message.sid, msg_header, msg_body))
+                message = self.client.messages.create( body= msg_body, to = str(self.conf_opts['phone_number']), from_='+18037537244')
+                self.log.info('%s: message sent to recipient, body = \"%s\"' % (msg_header, msg_body))
             except twilio.TwilioRestException as err:
                 self.log.error(err)
 

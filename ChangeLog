@@ -1,5 +1,6 @@
 CHANGES
 =======
 
+* create-batch with message notification - tested in dev
 * bulk loading batch - tested in dev
 * Initial commit

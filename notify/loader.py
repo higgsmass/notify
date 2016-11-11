@@ -5,6 +5,7 @@ import csv
 import time
 import glob
 import stat
+import fcntl
 
 import fnmatch
 import logging
@@ -36,10 +37,31 @@ def os_system_command(cmd, m_env=None):
         err = p.communicate()[1]
         p.wait()
     except OSError:
+        sys.stderr.write('ERROR: encountered in command\n\'%s\'' % cmd)
+        sys.stderr.write(p.communicate()[1])
         sys.exit(p.returncode)
 
     return (out, err, p)
 
+
+## acquire/release exclusive lock while processing bulk-loads for this datatype
+class Lock:
+
+    def __init__(self, filename, pars):
+        self.filename = filename
+        # This will create it if it does not exist already
+        self.handle = open(filename, 'w')
+        self.handle.write('\n'.join(pars))
+
+    # Bitwise OR fcntl.LOCK_NB if you need a non-blocking lock
+    def acquire(self):
+        fcntl.flock(self.handle, fcntl.LOCK_EX)
+
+    def release(self):
+        fcntl.flock(self.handle, fcntl.LOCK_UN)
+
+    def __del__(self):
+        self.handle.close()
 
 class loader(object):
 
@@ -50,13 +72,15 @@ class loader(object):
         self.options = parser.parse_args(sys.argv[1:])
         self.config_path = None
         self.config_vars = None
-
+        self.pid = None
+        self.lockfile = None
         self.sym_link = ''
         self.class_path = '.:'
         try:
             self.class_path += os.environ['CLASSPATH'] + ':'
         except KeyError:
             pass
+        self.user = os.environ['USER']
         self.valid_sites = []
         self.std_out = None
         self.std_err = None
@@ -79,6 +103,9 @@ class loader(object):
 
         if self.options.show:
             self.printconfig(True)
+
+        self.pid = os.getpid()
+        self.lockfile = os.path.join( self.load_opts['temp_path'], self.load_opts['category'] + '.lock')
 
         self.gapi = goose.sheets(parser, self.config_vars, self.log)
         self.service = self.gapi.service_start()
@@ -169,26 +196,22 @@ class loader(object):
             sys.exit(1)
 
         linkname = jpath.split(delim)[0]
-        linkdir = os.path.join( os.getcwd(), linkname)
+        self.linkdir = os.path.join( os.getcwd(), linkname)
         self.sym_link = os.path.join(self.load_opts['basepath'] , linkname)
         link_exists = False
         try:
-            link_exists = stat.S_ISLNK(os.lstat(linkdir).st_mode)
+            link_exists = stat.S_ISLNK(os.lstat(self.linkdir).st_mode)
         except OSError:
             pass
         if link_exists:
-            self.log.warn('symbolic link %s exists. trying to remove it' % linkdir)
-            try:
-                os.unlink( linkdir )
-            except OSError:
-                self.log.error('cannot remove file/link: %s' % linkdir)
-                sys.exit(1)
+            self.log.warn('symbolic link %s exists. trying to remove it' % self.linkdir)
+            self.cleanup()
         try:
             if self.options.logLevel == 'VERBOSE':
-                self.log.info('creating symbolic link %s -> %s ' % (linkdir, self.sym_link))
-            os.symlink( self.sym_link, linkdir )
+                self.log.info('creating symbolic link %s -> %s ' % (self.linkdir, self.sym_link))
+            os.symlink( self.sym_link, self.linkdir )
         except OSError:
-            self.log.error('cannot symlink: %s -> %s' % (linkdir, self.sym_link))
+            self.log.error('cannot symlink: %s -> %s' % (self.linkdir, self.sym_link))
 
         ## setup CLASSPATH environment variable (lib/*.jar and config)
         for item in glob.glob( os.path.join(self.load_opts['libpath'], '*.jar')):
@@ -206,8 +229,8 @@ class loader(object):
                         self.valid_sites = line.split('=')[1].strip().split('|')
                         self.log.info(self.valid_sites)
         except IOError as err:
-            self.log.error( 'I/O error {0}" {1}'.format(e.errno, e.strerror))
-            sys.exit(e.errno)
+            self.log.error( 'I/O error {0} {1}'.format(err.errno, err.strerror))
+            sys.exit(err.errno)
 
         ## check if site is one among allowed (valid) sites
         if self.options.blsite.strip() not in self.valid_sites:
@@ -220,6 +243,7 @@ class loader(object):
             sys.exit(1)
 
         ## append additional environment (capture default env set by ORACLE apps)
+        self.log.debug('setting up environment variables for ORACLE apps: %s' % self.load_opts['environment'])
         try:
             p = subprocess.Popen( ['bash', '-c', "trap 'env' exit; source \"$1\" > /dev/null 2>&1",
                 "_", self.load_opts['environment'] ], shell=False, stdout=subprocess.PIPE)
@@ -284,6 +308,9 @@ class loader(object):
                     else:
                         self.batch_create_data.update( { pat:[line, res]})
 
+        self.batch_create_data.update( { 'bluser':[self.user, {'bluser':self.user} ]})
+        print self.batch_create_data
+        sys.stdin.read(1)
 
     def batch_create_status(self, append = True):
 
@@ -327,11 +354,26 @@ class loader(object):
 
         self.notifier.message('batch_create_notify', msg_body)
 
+    def cleanup(self):
+        try:
+            os.unlink( self.linkdir )
+        except OSError:
+            self.log.error('cannot remove file/link: %s' % self.linkdir)
+            sys.exit(1)
 
 
     def run(self):
-        self.validate()
-        self.execute()
-        self.batch_create_status()
-        self.log.info('Processing complete')
+        pars = [ 'user = %s' % self.user, 'datatype = %s' % self.load_opts['category'], 'pid = %s' % self.pid, datetime.datetime.now().strftime("last_run = %F %H:%M:%S\n") ]
+        lock = Lock(self.lockfile, pars)
+        try:
+            lock.acquire()
+            self.validate()
+            self.execute()
+            self.batch_create_status()
+        except:
+            pass
+        finally:
+            self.cleanup()
+            lock.release()
+            self.log.info('Processing complete')
 
