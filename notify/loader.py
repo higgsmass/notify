@@ -309,8 +309,6 @@ class loader(object):
                         self.batch_create_data.update( { pat:[line, res]})
 
         self.batch_create_data.update( { 'bluser':[self.user, {'bluser':self.user} ]})
-        print self.batch_create_data
-        sys.stdin.read(1)
 
     def batch_create_status(self, append = True):
 

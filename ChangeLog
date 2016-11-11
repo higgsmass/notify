@@ -1,6 +1,7 @@
 CHANGES
 =======
 
+* added locking and user-id
 * create-batch with message notification - tested in dev
 * bulk loading batch - tested in dev
 * Initial commit
