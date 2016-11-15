@@ -59,8 +59,9 @@ class sheets(object):
         for j in qq:
             if j not in self.config_vars.defaults().keys():
                 sys.stderr.write( '%-25s: %s\n' % (j, qq[j]))
-        for j in self.oa2args:
-            sys.stderr.write( '%-25s: %s\n' % (j, self.oa2args[j]))
+        if self.oa2args:
+            for j in self.oa2args:
+                sys.stderr.write( '%-25s: %s\n' % (j, self.oa2args[j]))
 
     def get_credentials(self):
 

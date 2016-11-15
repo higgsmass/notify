@@ -21,8 +21,8 @@ class notify(object):
 
         self.conf_opts = config.getConfigSectionMap( self.config_vars, self.heading )
 
-        inc_pattern = re.compile('.*_notify')
-        [ self.incidents.update({ key:inc_pattern.match(key)}) for key in self.conf_opts.keys() if '_notify' in key  ]
+        inc_pattern = re.compile('.*_notify_.*')
+        [ self.incidents.update({ key:inc_pattern.match(key)}) for key in self.conf_opts.keys() if '_notify_' in key  ]
 
         if not log:
             self.log = logger.logInit(self.options.logLevel, self.conf_opts['log_path'], type(self).__name__)
@@ -43,8 +43,6 @@ class notify(object):
         for j in qq:
             if j not in self.config_vars.defaults().keys():
                 sys.stderr.write( '%-25s: %s\n' % (j, qq[j]))
-        for j in self.oa2args:
-            sys.stderr.write( '%-25s: %s\n' % (j, self.oa2args[j]))
 
 
     def message(self, msg_header, msg_body):

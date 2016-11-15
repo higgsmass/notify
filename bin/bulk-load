@@ -13,9 +13,13 @@ if __name__ == "__main__":
 
     ## required arguments
     opt.add_argument ("-c", "--config", dest="conf", help="Path to configuration file" , required=True)
-    opt.add_argument ("-s", "--site", dest="blsite", help="bulk load site: must be one of the following GHS|MUSC|PH|SRHS", required=True )
-    opt.add_argument ("-b", "--batch-size", dest="blsize", type=int, help="bulk load batch size: must be larger than zero",required=True )
+    opt.add_argument ("-s", "--site", dest="blsite", help="bulk load site: must be one of the following GHS|MUSC|PH|SRHS")
+    opt.add_argument ("-b", "--batch-size", dest="blsize", type=int, help="bulk load batch size: must be larger than zero")
 
+    opt.add_argument("--ets-validate", dest="ets_validate", action="store_true", default=False, help="ETS validation for a batch, requires batch ID")
+    opt.add_argument("--run-requestset", dest="run_request", action="store_true", default=False, help="Run request set for a batch, requires batch ID")
+    opt.add_argument ("-i", "--batch-id", dest="batch_id", type=int, help="bulk load batch ID" )
+    
     opt.add_argument("-l", "--log", dest="logLevel", choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL', 'VERBOSE'], default='INFO', help="Set the logging level")
     opt.add_argument("-p", "--print", dest="show", default=False, action="store_true", help="Print configuration")
     
