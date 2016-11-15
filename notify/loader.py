@@ -78,7 +78,7 @@ class loader(object):
         self.ets_codes_found = None
         self.sym_link = ''
         self.class_path = '.:'
-        self.upd_cbxs = None
+        self.bcs_opts = None
         self.msg_type = { True:'SUCCESS', False:'FAILURE' }
         try:
             self.class_path += os.environ['CLASSPATH'] + ':'
@@ -170,7 +170,6 @@ class loader(object):
         qq = config.getConfigSectionMap(self.config_vars, self.heading)
         sys.stderr.write('\n----------------------[ %s ]----------------------\n' % self.heading)
         for j in qq:
-            if j not in self.config_vars.defaults().keys():
                 sys.stderr.write( '%-25s: %s\n' % (j, qq[j]))
 
 
@@ -207,6 +206,10 @@ class loader(object):
 
 
     def run_create_batch(self):
+
+        self.log.info('\n\n'+'-'*50+'\nRunning Create Batch\n'+'-'*50+'\n')
+        sys.stdout.write('\n\n'+'-'*50+'\nRunning Create Batch\n'+'-'*50+'\n')
+
         cmd = [ 'java', '-Xms512m', '-Xmx1024m', self.load_opts['javaclass'] ]
         cmd.append(self.options.blsite)
         cmd.append(str(self.options.blsize))
@@ -224,15 +227,45 @@ class loader(object):
 
     def run_ets_validate(self, batch_id):
 
-        self.log.info('Running ETS Validation')
-        sys.stdout.write('Running ETS Validation\n')
+        self.log.info('\n\n'+'-'*50+'\nRunning ETS Validation\n'+'-'*50+'\n')
+        sys.stdout.write('\n\n'+'-'*50+'\nRunning ETS Validation\n'+'-'*50+'\n')
 
-        if batch_id == None:
+        self.rev_opts = config.getConfigSectionMap( self.config_vars, 'ets-validation' )
+        upcols = self.rev_opts['column_updates'].split('|')
+        mpcols = self.rev_opts['column_map'].split('|')
+        col_head = self.gapi.column_headers()[0]
+
+        if batch_id == -999:
             if 'batch' in self.batch_create_data.keys():
                 batch_id = self.batch_create_data['batch'][1]['batch']
             else:
                 sys.log.error('batch id not found, cannot proceed with ETS validation')
                 sys.exit(1)
+
+
+        ## check if batch_id is in the spreadsheet
+
+        range_names = [
+                self.gapi.batch_id_range()
+                ]
+        result = self.service.spreadsheets().values().batchGet(
+                spreadsheetId = self.gapi.get_id(),
+                ranges=range_names,
+                majorDimension = 'COLUMNS',
+                valueRenderOption = 'UNFORMATTED_VALUE' ).execute()
+
+
+        update_sheet = True
+        if not result.get('valueRanges')[0].has_key(u'values'):
+            self.log.error('Could not fetch values in specified range: \'%s\', cannot update spreadsheet with id: \'%s\'' % (range_names[0], self.gapi.get_id()))
+            update_sheet = False
+        else:
+            try:
+                row_num = result.get('valueRanges')[0].get('values')[0].index(int(batch_id)) + 1
+            except ValueError:
+                self.log.error('Could not find batch_id = %d in specified range: %s in spreadsheet with id: \'%s\'' % (batch_id, range_names[0], self.gapi.get_id()))
+                update_sheet = False
+                pass
 
         sql_path = distutils.sysconfig.get_python_lib()
         cmd = [ 'sqlplus', '-S', 'apps/apps', '@' + os.path.join(sql_path, 'notify/plsql/ets_validate.sql'), str(batch_id) ]
@@ -247,7 +280,7 @@ class loader(object):
             self.log.info('\n'+('-'*20)+'\n'+self.std_out['ets_valid'])
 
         self.ets_codes_found = False
-        key = self.load_opts['ets_key']
+        key = self.rev_opts['ets_key']
         codes = dict()
 
         for line in self.std_out['ets_valid'].split('\n'):
@@ -268,14 +301,63 @@ class loader(object):
             log.error('Unexpected error in converting ETS error code count')
             self.ets_codes_found = True
 
+        update_row = None
+
+        if update_sheet:
+            range_names = [ self.rev_opts['data_range'] % (row_num, row_num)]
+            result = self.service.spreadsheets().values().batchGet(
+                spreadsheetId = self.gapi.get_id(),
+                ranges=range_names,
+                majorDimension = 'ROWS',
+                valueRenderOption = 'UNFORMATTED_VALUE' ).execute()
+
+            if not result.get('valueRanges')[0].has_key(u'values'):
+                self.log.error('Could not update row %d for batch_id = %d in spreadsheet with id: \'%s\'' % (row_num, batch_id, range_names[0], self.gapi.get_id()))
+            else:
+                update_row = result.get(u'valueRanges')[0].get(u'values')[0]
+
+        ets_validate_data = { 'evstatus': self.msg_type[not self.ets_codes_found], 'lvcodes': codes[key] }
+
+
+        status_row = collections.OrderedDict( zip(col_head, update_row))
+
+
+        for i in range(0, len(upcols)):
+            key = mpcols[i]
+            head = upcols[i]
+            status_row[head] = ets_validate_data[key]
+
+        data = [
+            {
+                'range': range_names[0],
+                'values': [[ v for k,v in status_row.iteritems() ]]
+                },
+            ]
+
+        body_update = {
+            'valueInputOption': 'USER_ENTERED',
+            'data': data
+        }
+
+        result = self.service.spreadsheets().values().batchUpdate(
+                 spreadsheetId = self.gapi.get_id(), body=body_update).execute()
+
+        msg_body = '\nETS Validation for batch %s: %s %s \n' % ( batch_id , ets_validate_data['evstatus'], ets_validate_data['lvcodes'] )
+
+        self.notifier.message('ev_notify_codes', msg_body)
 
 
     def run_request_set(self, batch_id):
 
-        self.log.info('Running request set')
-        sys.stdout.write('Running request set\n')
+        self.rrs_opts = config.getConfigSectionMap( self.config_vars, 'request-set' )
+        upcols = self.rrs_opts['column_updates'].split('|')
+        mpcols = self.rrs_opts['column_map'].split('|')
+        col_head = self.gapi.column_headers()[0]
 
-        if batch_id == None:
+        self.log.info('\n\n'+'-'*50+'\nRunning Request Set\n'+'-'*50+'\n')
+        sys.stdout.write('\n\n'+'-'*50+'\nRunning Request Set\n'+'-'*50+'\n')
+
+        if batch_id == -999:
             if 'batch' in self.batch_create_data.keys():
                 batch_id = self.batch_create_data['batch'][1]['batch']
             else:
@@ -283,13 +365,35 @@ class loader(object):
                 sys.exit(1)
 
 
+        ## check if batch_id is in the spreadsheet
+        range_names = [
+                self.gapi.batch_id_range()
+                ]
+        result = self.service.spreadsheets().values().batchGet(
+                spreadsheetId = self.gapi.get_id(),
+                ranges=range_names,
+                majorDimension = 'COLUMNS',
+                valueRenderOption = 'UNFORMATTED_VALUE' ).execute()
+
+        update_sheet = True
+
+        if not result.get('valueRanges')[0].has_key(u'values'):
+            self.log.error('Could not fetch values in specified range: \'%s\', cannot update spreadsheet with id: \'%s\'' % (range_names[0], self.gapi.get_id()))
+            update_sheet = False
+        else:
+            try:
+                row_num = result.get('valueRanges')[0].get('values')[0].index( int(batch_id) ) + 1
+            except ValueError:
+                self.log.error('Could not find batch_id = %d in specified range: %s in spreadsheet with id: \'%s\'' % (batch_id, range_names[0], self.gapi.get_id()))
+                update_sheet = False
+
+
         if self.ets_codes_found == None:
             self.run_ets_validate(batch_id)
 
         if self.ets_codes_found == True:
-            k1 = self.load_opts['ets_key']
-            self.log.warn('%s: ETS codes need to be added for batch ID %s' % (self.batch_create_data[k1][1][k1], str(batch_id)))
-            sys.stderr.write('WARN:  %s: ETS codes need to be added for batch ID %s' % (self.batch_create_data[k1][1][k1], str(batch_id)))
+            self.log.warn('ETS codes need to be added for batch ID %s' % str(batch_id))
+            sys.stderr.write('WARN: ETS codes need to be added for batch ID %s' % str(batch_id))
             sys.exit(1)
 
         sql_path = distutils.sysconfig.get_python_lib()
@@ -302,6 +406,60 @@ class loader(object):
             sys.exit(p.returncode)
         else:
             self.log.info('\n'+('-'*20)+'\n'+self.std_out['request_set'])
+
+
+        update_row = None
+        if update_sheet:
+            range_names = ['Sheet1!A%s:U%s' % (row_num, row_num)]
+
+            result = self.service.spreadsheets().values().batchGet(
+                spreadsheetId = self.gapi.get_id(),
+                ranges=range_names,
+                majorDimension = 'ROWS',
+                valueRenderOption = 'UNFORMATTED_VALUE' ).execute()
+
+            if not result.get('valueRanges')[0].has_key(u'values'):
+                self.log.error('Could not update row %d for batch_id = %d in spreadsheet with id: \'%s\'' % (row_num, batch_id, range_names[0], self.gapi.get_id()))
+            else:
+                update_row = result.get('valueRanges')[0].get('values')[0]
+
+        key = self.rrs_opts['rqs_key']
+        pattern = re.compile(key + '.*[0-9]+')
+        codes = dict()
+
+        run_requestset_data = { 'rqstatus': '(null)', 'rqsetid': '(null)'}
+        for line in self.std_out['request_set'].split('\n'):
+            if pattern.match(line):
+                run_requestset_data['rqstatus'] = key.split()[0]
+                run_requestset_data['rqsetid'] = line.split(key)[1].strip()
+                break
+
+        status_row = collections.OrderedDict( zip(col_head, update_row))
+
+
+        for i in range(0, len(upcols)):
+            key = mpcols[i]
+            head = upcols[i]
+            status_row[head] = run_requestset_data[key]
+
+        data = [
+            {
+                'range': range_names[0],
+                'values': [[ v for k,v in status_row.iteritems() ]]
+                },
+            ]
+
+        body_update = {
+            'valueInputOption': 'USER_ENTERED',
+            'data': data
+        }
+
+        result = self.service.spreadsheets().values().batchUpdate(
+                 spreadsheetId = self.gapi.get_id(), body=body_update).execute()
+
+        msg_body = '\nRequest Set ID: %s for batch-id:%s %s \n' % ( run_requestset_data['rqsetid'], batch_id, run_requestset_data['rqstatus'] )
+
+        self.notifier.message('rq_notify_status', msg_body)
 
 
     def validate(self):
@@ -460,24 +618,21 @@ class loader(object):
                 self.stderr.write(msg+'\n')
                 sys.exit(1)
 
+        status = sorted(self.batch_create_data.keys()) == sorted(required)
+        self.batch_create_data.update( { 'cbstatus':[self.msg_type[status], {'cbstatus':self.msg_type[status]} ]})
+
 
     def update_createbatch(self, append = True):
 
         self.bcs_opts = config.getConfigSectionMap( self.config_vars, 'create-batch' )
-
         upcols = self.bcs_opts['column_updates'].split('|')
         mpcols = self.bcs_opts['column_map'].split('|')
 
-        result = self.service.spreadsheets().values().get(
-                    spreadsheetId = self.gapi.get_id(), range = self.bcs_opts['column_range']).execute()
-        row = result.get('values')
-
-        keys = row[0]
-
+        col_head = self.gapi.column_headers()[0]
 
         status_row = collections.OrderedDict()
-        for i in keys:
-            status_row[i] = ''
+        for i in col_head:
+            status_row[i] = '(null)'
 
         for i in range(0, len(upcols)):
             key = mpcols[i]
@@ -492,10 +647,8 @@ class loader(object):
 
         result = self.service.spreadsheets().values().append(
                  spreadsheetId = self.gapi.get_id(), valueInputOption='USER_ENTERED',
-                 range = self.bcs_opts['column_range'], insertDataOption='INSERT_ROWS',
+                 range = self.gapi.column_range(), insertDataOption='INSERT_ROWS',
                  body=body_append).execute()
-
-        self.upd_cbxs = result.get('updates').get('updatedRange')
 
         msg_stat = self.msg_type [ self.batch_create_data['fails'][1]['fails'].strip() == '0' ]
 
@@ -522,25 +675,42 @@ class loader(object):
 
         lock = Lock(self.lockfile, pars)
         try:
+            ## get exclusive lock
             lock.acquire()
+
+            ## validate input
             self.validate()
 
             ## path one is creating a new batch(man), ets-validate(opt) and run-request set(opt)
             if self.opt_path == 'one':
+                ## create batch
                 self.run_create_batch()
-                self.update_createbatch()
-                if self.load_opts['bc_ets_validate'].upper()[0] == 'Y':
-                    self.run_ets_validate(None)
-                if self.load_opts['bc_run_requestset'].upper()[0] == 'Y':
-                    self.run_request_set(None)
 
+                ## update spreadsheet
+                self.update_createbatch()
+
+                ## validate ETS codes
+                if self.load_opts['bc_ets_validate'].upper()[0] == 'Y':
+                    self.run_ets_validate(-999)
+
+                time.sleep( int(self.load_opts['delay']))
+                ## run request set
+                if self.load_opts['bc_run_requestset'].upper()[0] == 'Y':
+                    self.run_request_set(-999)
+
+            ## path two is ets-validate(opt) and run-request set(opt) with an existing batch id
             elif self.opt_path == 'two':
+
+                ## validate ETS codes
                 if self.options.ets_validate:
                     self.run_ets_validate(self.options.batch_id)
+
+                time.sleep( int(self.load_opts['delay']))
+                ## run request set
                 if self.options.run_request:
                     self.run_request_set(self.options.batch_id)
         except:
-            pass
+            raise
         finally:
             self.cleanup()
             lock.release()

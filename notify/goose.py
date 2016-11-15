@@ -103,6 +103,18 @@ class sheets(object):
         else:
             self.sid = id
 
+    def column_headers(self):
+        result = self.service.spreadsheets().values().get(
+                spreadsheetId = self.get_id(), range = self.conf_opts['column_range']).execute()
+        row = result.get('values')
+        return row
+
+    def batch_id_range(self):
+        return self.conf_opts['batch_id_col']
+
+    def column_range(self):
+        return self.conf_opts['column_range']
+
     def service_start(self):
         self.get_credentials()
         self.http = self.credentials.authorize(httplib2.Http())

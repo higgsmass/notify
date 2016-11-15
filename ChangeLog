@@ -1,6 +1,7 @@
 CHANGES
 =======
 
+* added ETS validate and run request set modules
 * restrict printout to stdout
 * added locking and user-id
 * create-batch with message notification - tested in dev
