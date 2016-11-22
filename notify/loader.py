@@ -1,6 +1,7 @@
 import os
 import re
 import sys
+import pwd
 import csv
 import time
 import glob
@@ -9,6 +10,7 @@ import fcntl
 
 import fnmatch
 import logging
+import sqlite3
 import datetime
 import traceback
 import distutils
@@ -43,6 +45,42 @@ def os_system_command(cmd, m_env=None):
         sys.exit(p.returncode)
 
     return (out, err, p)
+
+class SQLiteDB:
+
+    def __init__(self, path):
+
+        self.path = path
+        self.db = None
+
+        if not os.path.exists(os.path.split(self.path)[0]):
+            sys.stderr.write('ERROR: Unknown path/filename: %s' % self.path)
+            sys.exit(1)
+        try:
+            self.db = sqlite3.connect(self.path)
+        except IOError as e:
+            sys.stderr.write(str(e))
+            sys.stderr.write('ERROR: Creating/opening dataase: %s' % self.path)
+            sys.exit(1)
+
+    def fetchdict(self, sql, params=()):
+        cur = self.db.cursor().execute(sql, params)
+        res = cur.fetchone()
+        if res is None:
+            return { k[0]:None for k in cur.description }
+        return { k[0]: v for k, v in list(zip(cur.description, res)) }
+
+
+    def handle(self):
+        return self.db
+
+    def cursor(self):
+        return self.db.cursor()
+
+    def __del__(self):
+        if self.db:
+            self.db.commit()
+            self.db.close()
 
 
 ## acquire/release exclusive lock while processing bulk-loads for this datatype
@@ -79,6 +117,7 @@ class loader(object):
         self.sym_link = ''
         self.class_path = '.:'
         self.bcs_opts = None
+        self.linkdir = None
         self.msg_type = { True:'SUCCESS', False:'FAILURE' }
         try:
             self.class_path += os.environ['CLASSPATH'] + ':'
@@ -104,6 +143,8 @@ class loader(object):
 
         self.load_opts = config.getConfigSectionMap( self.config_vars, self.heading )
         self.log = logger.logInit(self.options.logLevel, self.load_opts['log_path'], type(self).__name__)
+
+        self.sql_path = os.path.join ( distutils.sysconfig.get_python_lib(), 'notify/plsql' )
 
         if self.options.show:
             self.printconfig(True)
@@ -153,13 +194,45 @@ class loader(object):
         else:
             self.log.info(msg_head)
 
+        dbname = os.path.join(self.load_opts['db_path'], ('.' + self.load_opts['category'] + '.db'))
+        self.db = SQLiteDB(dbname)
+        if not self.db:
+            self.log.error('ERROR initializing database for messaging/authentication');
+            sys.exit(1)
+
+        ## load db with authy/twilio details
+        try:
+            with open(os.path.join(self.sql_path, 'create_authuser.sql')) as f:
+                lines = ''.join(f.readlines())
+                self.db.handle().executescript(lines)
+        except sqlite3.Error as e:
+            msg = 'ERROR: ' + ' '.join(e.args)+'\n'
+            sys.stderr.write(msg)
+            self.log.error(msg)
+        except IOError as err:
+            self.log.error( 'I/O error {0} {1}'.format(err.errno, err.strerror))
+            sys.exit(err.errno)
+
+        ## validate user
+        current_user = self.user.upper().strip()
+        config_user = self.load_opts['user'].upper().strip()
+        if current_user == config_user:
+            msg = 'Running as user %s\n' % self.user
+            sys.stdout.write(msg)
+        else:
+            msg = 'User profile mismatch. Are you sure you are \'%s\'? Modify configuration and set \'user\' parameter to %s\n' % (config_user.lower(), current_user.lower())
+            self.log.error(msg)
+            sys.stderr.write(msg)
+            sys.exit(1)
+
         self.pid = os.getpid()
         self.lockfile = os.path.join( self.load_opts['temp_path'], self.load_opts['category'] + '.lock')
 
         self.gapi = goose.sheets(parser, self.config_vars, self.log)
         self.service = self.gapi.service_start()
 
-        self.notifier = notify.notify(parser, self.config_vars, self.log)
+        self.notifier = notify.notify(parser, self.db, self.user, self.config_vars, self.log)
+
 
     def printconfig(self, defaults):
         if defaults:
@@ -267,8 +340,7 @@ class loader(object):
                 update_sheet = False
                 pass
 
-        sql_path = distutils.sysconfig.get_python_lib()
-        cmd = [ 'sqlplus', '-S', 'apps/apps', '@' + os.path.join(sql_path, 'notify/plsql/ets_validate.sql'), str(batch_id) ]
+        cmd = [ 'sqlplus', '-S', 'apps/apps', '@' + os.path.join(self.sql_path, 'ets_validate.sql'), str(batch_id) ]
 
         self.log.debug(' '.join(cmd))
 
@@ -396,8 +468,7 @@ class loader(object):
             sys.stderr.write('WARN: ETS codes need to be added for batch ID %s' % str(batch_id))
             sys.exit(1)
 
-        sql_path = distutils.sysconfig.get_python_lib()
-        cmd = [ 'sqlplus', '-S', 'apps/apps', '@'+ os.path.join(sql_path, 'notify/plsql/run_request_set.sql'), str(batch_id) ]
+        cmd = [ 'sqlplus', '-S', 'apps/apps', '@'+ os.path.join(self.sql_path, 'run_request_set.sql'), str(batch_id) ]
 
         self.log.debug(' '.join(cmd))
         (self.std_out['request_set'], self.std_err['request_set'] , p) =  os_system_command( ' '.join(cmd), self.run_env)
@@ -462,7 +533,7 @@ class loader(object):
         self.notifier.message('rq_notify_status', msg_body)
 
 
-    def validate(self):
+    def validate_configuration(self):
 
         cl_suffix = '.class'
         delim = '/'
@@ -663,11 +734,12 @@ class loader(object):
         self.notifier.message('bc_notify_counts', msg_body)
 
     def cleanup(self):
-        try:
-            os.unlink( self.linkdir )
-        except OSError:
-            self.log.error('cannot remove file/link: %s' % self.linkdir)
-            sys.exit(1)
+        if self.linkdir:
+            try:
+                os.unlink( self.linkdir )
+            except OSError:
+                self.log.error('cannot remove file/link: %s' % self.linkdir)
+                sys.exit(1)
 
 
     def run(self):
@@ -679,7 +751,7 @@ class loader(object):
             lock.acquire()
 
             ## validate input
-            self.validate()
+            self.validate_configuration()
 
             ## path one is creating a new batch(man), ets-validate(opt) and run-request set(opt)
             if self.opt_path == 'one':

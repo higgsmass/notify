@@ -1,6 +1,7 @@
 CHANGES
 =======
 
+* tested ETS valiation, run request set
 * added ETS validate and run request set modules
 * restrict printout to stdout
 * added locking and user-id
