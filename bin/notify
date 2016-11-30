@@ -1,6 +1,25 @@
-#!/usr/bin/env python
+#!/bin/sh
+''''exec python -u -Wignore "$0" ${1+"$@"} # '''
 
-import notify
-import config
-import logger
-print notify.hello()
+
+from notify import updater
+import sys
+import argparse
+import oauth2client
+
+if __name__ == "__main__":
+
+    opt = argparse.ArgumentParser( parents=[oauth2client.tools.argparser], formatter_class=argparse.RawDescriptionHelpFormatter)
+
+    ## required arguments
+    opt.add_argument ("-c", "--config", dest="conf", help="Path to configuration file" , required=True)
+
+    opt.add_argument ("-i", "--batch-id", dest="batch_id", type=int, help="bulk load batch ID" )
+    
+    opt.add_argument("-l", "--log", dest="logLevel", choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL', 'VERBOSE'], default='INFO', help="Set the logging level")
+    opt.add_argument("-p", "--print", dest="show", default=False, action="store_true", help="Print configuration")
+    
+    up = updater.updater(opt)
+    up.run()
+
+

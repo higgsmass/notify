@@ -109,11 +109,11 @@ class sheets(object):
         row = result.get('values')
         return row
 
-    def batch_id_range(self):
-        return self.conf_opts['batch_id_col']
-
-    def column_range(self):
-        return self.conf_opts['column_range']
+    def range(self, range_name):
+        try:
+            return self.conf_opts[range_name]
+        except KeyError:
+            return None
 
     def service_start(self):
         self.get_credentials()

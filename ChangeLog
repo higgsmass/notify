@@ -1,6 +1,7 @@
 CHANGES
 =======
 
+* tested phone verification and added get_status
 * tested ETS valiation, run request set
 * added ETS validate and run request set modules
 * restrict printout to stdout

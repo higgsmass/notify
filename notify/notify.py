@@ -11,21 +11,7 @@ import termcolor
 ## local imports
 import config
 import logger
-
-def userinput(timeout=0.0):
-    return select.select([sys.stdin], [], [], timeout)[0]
-
-
-def countdown(msg, tmax):
-    decr = 1 ## refresh time decrement
-    while tmax >= 0:
-        show = '\r' + msg + '[ %3d s remaining ]: ' % tmax
-        sys.stdout.write(show)
-        sys.stdout.flush()
-        tmax -= decr
-        if userinput(decr):
-            return raw_input()
-    return None
+import helper
 
 class notify(object):
 

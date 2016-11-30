@@ -23,84 +23,7 @@ import logger
 import goose
 import notify
 
-def os_system_command(cmd, m_env=None):
-    res = None
-    out = ''
-    err = None
-
-    try:
-        if m_env == None:
-            p = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        else:
-            p = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env = m_env)
-
-        for line in iter(p.stdout.readline, b''):
-            out += line
-            sys.stdout.write(line)
-        err = p.communicate()[1]
-        p.wait()
-    except OSError:
-        sys.stderr.write('ERROR: encountered in command\n\'%s\'' % cmd)
-        sys.stderr.write(p.communicate()[1])
-        sys.exit(p.returncode)
-
-    return (out, err, p)
-
-class SQLiteDB:
-
-    def __init__(self, path):
-
-        self.path = path
-        self.db = None
-
-        if not os.path.exists(os.path.split(self.path)[0]):
-            sys.stderr.write('ERROR: Unknown path/filename: %s' % self.path)
-            sys.exit(1)
-        try:
-            self.db = sqlite3.connect(self.path)
-        except IOError as e:
-            sys.stderr.write(str(e))
-            sys.stderr.write('ERROR: Creating/opening dataase: %s' % self.path)
-            sys.exit(1)
-
-    def fetchdict(self, sql, params=()):
-        cur = self.db.cursor().execute(sql, params)
-        res = cur.fetchone()
-        if res is None:
-            return { k[0]:None for k in cur.description }
-        return { k[0]: v for k, v in list(zip(cur.description, res)) }
-
-
-    def handle(self):
-        return self.db
-
-    def cursor(self):
-        return self.db.cursor()
-
-    def __del__(self):
-        if self.db:
-            self.db.commit()
-            self.db.close()
-
-
-## acquire/release exclusive lock while processing bulk-loads for this datatype
-class Lock:
-
-    def __init__(self, filename, pars):
-        self.filename = filename
-        # This will create it if it does not exist already
-        self.handle = open(filename, 'w')
-        self.handle.write('\n'.join(pars))
-
-    # Bitwise OR fcntl.LOCK_NB if you need a non-blocking lock
-    def acquire(self):
-        fcntl.flock(self.handle, fcntl.LOCK_EX)
-
-    def release(self):
-        fcntl.flock(self.handle, fcntl.LOCK_UN)
-
-    def __del__(self):
-        self.handle.close()
+from helper import *
 
 class loader(object):
 
@@ -217,7 +140,7 @@ class loader(object):
         current_user = self.user.upper().strip()
         config_user = self.load_opts['user'].upper().strip()
         if current_user == config_user:
-            msg = 'Running as user %s\n' % self.user
+            msg = '\n--> Running as user: %s\n' % self.user
             sys.stdout.write(msg)
         else:
             msg = 'User profile mismatch. Are you sure you are \'%s\'? Modify configuration and set \'user\' parameter to %s\n' % (config_user.lower(), current_user.lower())
@@ -244,38 +167,6 @@ class loader(object):
         sys.stderr.write('\n----------------------[ %s ]----------------------\n' % self.heading)
         for j in qq:
                 sys.stderr.write( '%-25s: %s\n' % (j, qq[j]))
-
-
-    def capture_env(self, env_vars):
-        ## base env
-        self.run_env = dict(os.environ)
-
-        ## oracle env
-        clpath_found = False
-        for line in env_vars.split('\n'):
-            if not '=' in line:
-                continue
-            try:
-                key, val = line.split('=', 1)
-
-                ## append classpath if key has it
-                if key == 'CLASSPATH':
-                    val += ':' + self.class_path
-                    clpath_found = True
-                self.run_env.update({ key:val })
-            except ValueError, err:
-                self.log.warn('caught an exception in env \'%s\'\n%s' % (line, err))
-                pass
-
-        ## append classpath if not already done
-        if not clpath_found:
-            self.run_env.update({ 'CLASSPATH':self.class_path })
-
-        if self.options.logLevel == 'VERBOSE':
-            out = ''
-            for key in self.run_env:
-                out += key+'='+self.run_env[key]+'\n'
-            self.log.info(out)
 
 
     def run_create_batch(self):
@@ -319,7 +210,7 @@ class loader(object):
         ## check if batch_id is in the spreadsheet
 
         range_names = [
-                self.gapi.batch_id_range()
+                self.gapi.range('batch_id_col')
                 ]
         result = self.service.spreadsheets().values().batchGet(
                 spreadsheetId = self.gapi.get_id(),
@@ -439,7 +330,7 @@ class loader(object):
 
         ## check if batch_id is in the spreadsheet
         range_names = [
-                self.gapi.batch_id_range()
+                self.gapi.range('batch_id_col')
                 ]
         result = self.service.spreadsheets().values().batchGet(
                 spreadsheetId = self.gapi.get_id(),
@@ -495,14 +386,16 @@ class loader(object):
                 update_row = result.get('valueRanges')[0].get('values')[0]
 
         key = self.rrs_opts['rqs_key']
-        pattern = re.compile(key + '.*[0-9]+')
+        pattern = re.compile( r''.join( [ r'(?P<fmsg>%s[^\d]+)' % key, r'(?P<id>[\d]+)' ]) )
         codes = dict()
 
         run_requestset_data = { 'rqstatus': '(null)', 'rqsetid': '(null)'}
         for line in self.std_out['request_set'].split('\n'):
-            if pattern.match(line):
-                run_requestset_data['rqstatus'] = key.split()[0]
-                run_requestset_data['rqsetid'] = line.split(key)[1].strip()
+            m_grp = pattern.match(line)
+            if m_grp:
+                meta = m_grp.groupdict()
+                run_requestset_data['rqstatus'] = meta['fmsg'].split()[0]
+                run_requestset_data['rqsetid'] = meta['id'].strip()
                 break
 
         status_row = collections.OrderedDict( zip(col_head, update_row))
@@ -621,8 +514,7 @@ class loader(object):
             self.log.error(cerr)
             sys.exit(p.returncode)
 
-        self.capture_env(env_vars)
-
+        self.run_env = capture_env(self.load_opts['environment'], { 'CLASSPATH' : self.class_path } )
 
     def status_createbatch(self):
         pat_base = [ r'(?P<time>.+)', r'\[(?P<process>\S+)\]', r'(?P<status>Line: [0-9]+\s+INFO\s+\-)' ]
@@ -718,7 +610,7 @@ class loader(object):
 
         result = self.service.spreadsheets().values().append(
                  spreadsheetId = self.gapi.get_id(), valueInputOption='USER_ENTERED',
-                 range = self.gapi.column_range(), insertDataOption='INSERT_ROWS',
+                 range = self.gapi.range('column_range'), insertDataOption='INSERT_ROWS',
                  body=body_append).execute()
 
         msg_stat = self.msg_type [ self.batch_create_data['fails'][1]['fails'].strip() == '0' ]
