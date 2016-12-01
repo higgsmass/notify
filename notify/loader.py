@@ -169,16 +169,6 @@ class loader(object):
                 sys.stderr.write( '%-25s: %s\n' % (j, qq[j]))
 
 
-        ## append classpath if not already done
-        if not clpath_found:
-            self.run_env.update({ 'CLASSPATH':self.class_path })
-
-        if self.options.logLevel == 'VERBOSE':
-            out = ''
-            for key in self.run_env:
-                out += key+'='+self.run_env[key]+'\n'
-            self.log.info(out)
-
     def run_create_batch(self):
 
         self.log.info('\n\n'+'-'*50+'\nRunning Create Batch\n'+'-'*50+'\n')

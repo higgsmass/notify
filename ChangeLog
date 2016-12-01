@@ -1,6 +1,7 @@
 CHANGES
 =======
 
+* bugfixes and tested batch updateof request sets
 * updates, factoring out common utils into helper and added get_status
 * tested phone verification and added get_status
 * tested ETS valiation, run request set
