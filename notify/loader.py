@@ -169,6 +169,16 @@ class loader(object):
                 sys.stderr.write( '%-25s: %s\n' % (j, qq[j]))
 
 
+        ## append classpath if not already done
+        if not clpath_found:
+            self.run_env.update({ 'CLASSPATH':self.class_path })
+
+        if self.options.logLevel == 'VERBOSE':
+            out = ''
+            for key in self.run_env:
+                out += key+'='+self.run_env[key]+'\n'
+            self.log.info(out)
+
     def run_create_batch(self):
 
         self.log.info('\n\n'+'-'*50+'\nRunning Create Batch\n'+'-'*50+'\n')
@@ -372,7 +382,7 @@ class loader(object):
 
         update_row = None
         if update_sheet:
-            range_names = ['Sheet1!A%s:U%s' % (row_num, row_num)]
+            range_names = [ self.rrs_opts['data_range'] % (row_num, row_num)]
 
             result = self.service.spreadsheets().values().batchGet(
                 spreadsheetId = self.gapi.get_id(),
@@ -501,20 +511,13 @@ class loader(object):
 
             self.log.info('SITE = %s, BATCH_SIZE = %d\n' % (self.options.blsite.strip(), self.options.blsize))
 
-        ## append additional environment (capture default env set by ORACLE apps)
-        self.log.debug('setting up environment variables for ORACLE apps: %s' % self.load_opts['environment'])
-        try:
-            p = subprocess.Popen( ['bash', '-c', "trap 'env' exit; source \"$1\" > /dev/null 2>&1",
-                "_", self.load_opts['environment'] ], shell=False, stdout=subprocess.PIPE)
-            (env_vars, cerr) = p.communicate()
-            if not p.returncode == 0:
-                self.log.error(cerr)
-                sys.exit(p.returncode)
-        except OSError:
-            self.log.error(cerr)
-            sys.exit(p.returncode)
-
         self.run_env = capture_env(self.load_opts['environment'], { 'CLASSPATH' : self.class_path } )
+        if self.options.logLevel == 'VERBOSE':
+            out = ''
+            for key in self.run_env:
+                out += key+'='+self.run_env[key]+'\n'
+            self.log.info(out)
+
 
     def status_createbatch(self):
         pat_base = [ r'(?P<time>.+)', r'\[(?P<process>\S+)\]', r'(?P<status>Line: [0-9]+\s+INFO\s+\-)' ]

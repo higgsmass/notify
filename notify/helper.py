@@ -55,7 +55,10 @@ def capture_env(env_var_script, append_vars):
     run_env = dict(os.environ)
 
     ## oracle env
-    env_var_status = [ (key,False) for key in sorted(append_vars.keys()) ]
+    env_var_status = dict()
+    for key in sorted(append_vars.keys()):
+        env_var_status.update( {key:False} )
+
     for line in env_vars.split('\n'):
         if not '=' in line:
             continue
@@ -64,17 +67,15 @@ def capture_env(env_var_script, append_vars):
 
             ## append env-var if key is foound
             for ikey in env_var_status:
-                if key == ikey[0]:
-                    val += ':' + append_vars[ikey[0]]
-                    l = list(ikey)
-                    l[1] = True
-                    ikey = tuple(l)
+                if key == ikey:
+                    val += ':' + append_vars[ikey]
+                    env_var_status[ikey] = True
                 run_env.update({ key:val })
 
             ## if key is not found, add new key/var to env
             for ikey in env_var_status:
-                if not ikey[1]:
-                    run_env.update( { ikey[0]:append_vars[ ikey[0]] })
+                if not env_var_status[ikey]:
+                    run_env.update( { ikey:append_vars[ikey] })
         except ValueError, err:
             pass
 

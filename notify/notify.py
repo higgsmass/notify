@@ -11,7 +11,7 @@ import termcolor
 ## local imports
 import config
 import logger
-import helper
+from helper import *
 
 class notify(object):
 

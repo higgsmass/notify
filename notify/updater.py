@@ -4,13 +4,10 @@ import sys
 import pwd
 import csv
 import time
-import glob
 import stat
 import fcntl
 
-import fnmatch
 import logging
-import sqlite3
 import datetime
 import traceback
 import distutils
@@ -37,22 +34,15 @@ class updater(object):
         self.pid = None
         self.lockfile = None
         self.upd_tids = None
-        self.sym_link = ''
         self.class_path = '.:'
         self.run_env = None
-        self.bcs_opts = None
-        self.linkdir = None
-        self.msg_type = { True:'SUCCESS', False:'FAILURE' }
+        self.msg_type = { True:'SUCCESS', False:'PROCESSED' }
         try:
             self.class_path += os.environ['CLASSPATH'] + ':'
         except KeyError:
             pass
         self.user = os.environ['USER']
-        self.valid_sites = []
-        self.std_out = { 'create_batch': None, 'ets_valid':None, 'request_set':None }
-        self.std_err = { 'create_batch': None, 'ets_valid':None, 'request_set':None }
 
-        self.batch_create_data = dict()
 
         sys.stderr.write("\n--> Reading configuration file: %s\n" % self.options.conf)
         try:
@@ -73,8 +63,6 @@ class updater(object):
         if self.options.show:
             self.printconfig(True)
 
-        opt_valid = True
-        self.opt_path = 'one'
 
         msg_head = 'Command line Options:\n'
 
@@ -125,7 +113,7 @@ class updater(object):
         col_head = self.gapi.column_headers()[0]
 
 
-        ## check if batch_id is in the spreadsheet
+        ## check if request set id is in the spreadsheet
 
         range_names = [
                 self.gapi.range('reqset_id_col'),
@@ -137,6 +125,7 @@ class updater(object):
                 majorDimension = 'COLUMNS',
                 valueRenderOption = 'UNFORMATTED_VALUE' ).execute()
 
+        ## get all the rows for columns = request_id, request_status
         update_sheet = True
         if not result.get('valueRanges')[0].has_key(u'values'):
             self.log.error('Could not fetch values in specified range: \'%s\', cannot update spreadsheet with id: \'%s\'' % (range_names[0], self.gapi.get_id()))
@@ -149,18 +138,102 @@ class updater(object):
                 update_sheet = False
                 pass
 
+        ## initialize row for updating spreadsheet
+        #status_row = collections.OrderedDict()
+        #for i in col_head:
+        #    status_row[i] = '(null)'
+
+        ## criteria to parse and extract info from output of get_status query
+        l_common = [ r'(?P<vbstatus>[A-Z])\,', r'(?P<fmsg1>START TIME:)', r'(?P<vbstime>[0-9\/\:\ ]+)\,', r'(?P<fmsg2>COMPLETION TIME:)', r'(?P<vbetime>[0-9\/\:\ ]+)' ]
+        l_vb = [ r'(?P<fmsg0>.*Bulk Load Validate Batch.*STATUS:)' ] + l_common
+        l_tb = [ r'(?P<fmsg0>.*Bulk Load Transfer Batch.*STATUS:)' ] + l_common
+        pat_vb = re.compile( '\s+'.join (l_vb) )
+        pat_tb = re.compile( '\s+'.join (l_tb).replace('vb', 'tb') )
+        req_fields = [ 'vbstatus', 'vbstime', 'vbetime', 'tbstatus', 'tbstime', 'tbetime' ]
+
+
         if update_sheet:
+            ## capture environment to run sql query
             self.run_env = capture_env(self.load_opts['environment'], { 'CLASSPATH' : self.class_path } )
+
+            ## loop over all rows that need update
             for tid in self.upd_tids:
+
+                ## run command (get_status)
                 cmd = [ 'sqlplus', '-S', 'apps/apps', '@'+ os.path.join(self.sql_path, 'get_status.sql'), str(tid) ]
                 self.log.debug(' '.join(cmd))
                 self.log.info('Processing Request Set ID: %s' % tid)
-                sys.stdin.read(1)
                 (out, err, p) =  os_system_command( ' '.join(cmd), self.run_env)
+                update_tidrow = False
                 if not p.returncode == 0:
                     self.log.error(err)
                     continue
                 else:
+                    ## parse and get data to update
+                    upd_defaults = { 'rqstatus':'PROCFAIL', 'vbstatus':'(null)', 'vbstime':'(null)',
+                            'vbetime':'(null)', 'tbstatus':'(null)', 'tbstime':'(null)', 'tbetime':'(null)' }
+
+                    for line in out.split('\n'):
+                        grp_vb = pat_vb.match(line)
+                        if grp_vb:
+                            m_vb = grp_vb.groupdict()
+                            for key in m_vb.keys():
+                                if key in req_fields:
+                                    upd_defaults.update( { key:m_vb[key] } )
+                        grp_tb = pat_tb.match(line)
+                        if grp_tb:
+                            m_tb = grp_tb.groupdict()
+                            for key in m_tb.keys():
+                                if key in req_fields:
+                                    upd_defaults.update( { key:m_tb[key] } )
+
+                    upd_defaults['rqstatus'] = self.msg_type [ upd_defaults['vbstatus'] == 'C' and upd_defaults['tbstatus'] == 'C' ]
+
+
+                    ## first get row for this tid
+                    try:
+                        row_num = result.get('valueRanges')[0].get('values')[0].index(int(tid)) + 1
+                        update_tidrow = True
+                    except ValueError:
+                        self.log.error('Could not find batch_id = %d in specified range: %s in spreadsheet with id: \'%s\'' % (tid, range_names[0], self.gapi.get_id()))
+                        pass
+
+                    ## parse and get data to update
+                    if update_tidrow:
+                        range_names = [ self.rev_opts['data_range'] % (row_num, row_num)]
+                        res_tid = self.service.spreadsheets().values().batchGet(
+                            spreadsheetId = self.gapi.get_id(),
+                            ranges=range_names,
+                            majorDimension = 'ROWS',
+                            valueRenderOption = 'UNFORMATTED_VALUE' ).execute()
+
+                        if not res_tid.get('valueRanges')[0].has_key(u'values'):
+                            self.log.error('Could not update row %d for batch_id = %d in spreadsheet with id: \'%s\'' % (row_num, tid, range_names[0], self.gapi.get_id()))
+                        else:
+                            update_row = res_tid.get(u'valueRanges')[0].get(u'values')[0]
+                            status_row = collections.OrderedDict( zip(col_head, update_row))
+                        ## prepare update row
+                        for i in range(0, len(upcols)):
+                            status_row[ upcols[i] ] = upd_defaults[ mpcols[i] ]
+
+                        ## update row
+                        data = [
+                            {
+                                'range': range_names[0],
+                                'values': [[ v for k,v in status_row.iteritems() ]]
+                                },
+                            ]
+
+                        body_update = {
+                            'valueInputOption': 'USER_ENTERED',
+                            'data': data
+                        }
+
+                        res_upd = self.service.spreadsheets().values().batchUpdate(
+                                spreadsheetId = self.gapi.get_id(),
+                                body = body_update).execute()
+
+
                     self.log.info('\n'+('-'*20)+'\n'+out)
 
 

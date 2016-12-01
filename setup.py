@@ -52,7 +52,7 @@ setup(
     },
 
     scripts=[
-        'bin/notify',
+        'bin/bl-update',
         'bin/bulk-load'
     ],
 
