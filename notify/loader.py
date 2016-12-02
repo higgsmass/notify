@@ -12,6 +12,7 @@ import fnmatch
 import logging
 import sqlite3
 import datetime
+import platform
 import traceback
 import distutils
 import subprocess
@@ -41,6 +42,7 @@ class loader(object):
         self.class_path = '.:'
         self.bcs_opts = None
         self.linkdir = None
+        self.notes = ''
         self.msg_type = { True:'SUCCESS', False:'FAILURE' }
         try:
             self.class_path += os.environ['CLASSPATH'] + ':'
@@ -510,7 +512,7 @@ class loader(object):
 
 
     def status_createbatch(self):
-        pat_base = [ r'(?P<time>.+)', r'\[(?P<process>\S+)\]', r'(?P<status>Line: [0-9]+\s+INFO\s+\-)' ]
+        pat_base = [ r'(?P<time>.*)\,[0-9]+', r'\[(?P<process>\S+)\]', r'(?P<status>Line: [0-9]+\s+INFO\s+\-)' ]
         ## regex patterns to extract from output
 
         ## Create Batch Date/Time Started (tab = SITE-DataType, column = D)
@@ -562,10 +564,14 @@ class loader(object):
                         self.batch_create_data.update( { pat:[line, res]})
                         num_found += 1
 
+        self.notes = 'automatically generated at ' + datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S') + ' on ' + platform.node()
         self.batch_create_data.update( { 'bluser':[self.user, {'bluser':self.user} ]})
+        self.batch_create_data.update( { 'blsite':[self.options.blsite, {'blsite':self.options.blsite} ]})
+        self.batch_create_data.update( { 'blnotes':[self.notes, {'blnotes':self.notes} ]})
+        self.batch_create_data.update( { 'category':[self.load_opts['category'] , {'category':self.load_opts['category'] } ]})
         num_found += 1
 
-        required = ['fails', 'succs', 'end_date', 'start_date', 'bluser', 'procs', 'batch']
+        required = ['fails', 'succs', 'end_date', 'start_date', 'bluser', 'procs', 'batch', 'blsite', 'category', 'blnotes' ]
 
         for it in required:
             if not it in self.batch_create_data.keys():
@@ -588,7 +594,7 @@ class loader(object):
 
         status_row = collections.OrderedDict()
         for i in col_head:
-            status_row[i] = '(null)'
+            status_row[i] = ''
 
         for i in range(0, len(upcols)):
             key = mpcols[i]

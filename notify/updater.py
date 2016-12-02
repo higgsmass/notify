@@ -34,9 +34,10 @@ class updater(object):
         self.pid = None
         self.lockfile = None
         self.upd_tids = None
+        self.upd_uids = None
         self.class_path = '.:'
         self.run_env = None
-        self.msg_type = { True:'SUCCESS', False:'PROCESSED' }
+        self.msg_type = { True:'SUCCESS', False:'FAILED' }
         try:
             self.class_path += os.environ['CLASSPATH'] + ':'
         except KeyError:
@@ -89,6 +90,13 @@ class updater(object):
         self.gapi = goose.sheets(parser, self.config_vars, self.log)
         self.service = self.gapi.service_start()
 
+        dbname = os.path.join(self.load_opts['db_path'], ('.' + self.load_opts['category'] + '.db'))
+        self.db = SQLiteDB(dbname)
+        if not self.db:
+            self.log.error('ERROR initializing database for messaging/authentication');
+            sys.exit(1)
+
+        self.notifier = notify.notify(parser, self.db, self.user, self.config_vars, self.log)
 
     def printconfig(self, defaults):
         if defaults:
@@ -117,7 +125,8 @@ class updater(object):
 
         range_names = [
                 self.gapi.range('reqset_id_col'),
-                self.gapi.range('reqset_status_col')
+                self.gapi.range('reqset_status_col'),
+                self.gapi.range('bluser_col')
                 ]
         result = self.service.spreadsheets().values().batchGet(
                 spreadsheetId = self.gapi.get_id(),
@@ -125,23 +134,23 @@ class updater(object):
                 majorDimension = 'COLUMNS',
                 valueRenderOption = 'UNFORMATTED_VALUE' ).execute()
 
-        ## get all the rows for columns = request_id, request_status
+        ## get rows matching the statuses specified by user. each row is an ordered tuple of (request_id, request_status, request_user)
         update_sheet = True
         if not result.get('valueRanges')[0].has_key(u'values'):
             self.log.error('Could not fetch values in specified range: \'%s\', cannot update spreadsheet with id: \'%s\'' % (range_names[0], self.gapi.get_id()))
             update_sheet = False
         else:
             try:
-                self.upd_tids = collections.OrderedDict((k,v) for k,v in zip( result.get('valueRanges')[0].get('values')[0], result.get('valueRanges')[1].get('values')[0] ) if v == self.rev_opts['pick_status'])
+                self.upd_tids = [ irow for irow in
+                        map ( lambda rid, rstat, rusr : (rid, rstat, rusr),
+                            result.get('valueRanges')[0].get('values')[0], result.get('valueRanges')[1].get('values')[0], result.get('valueRanges')[2].get('values')[0] )
+                            if irow[1] in self.rev_opts['pick_status'].split('|')
+                        ]
             except ValueError:
                 self.log.error('Could not find batch_id = %d in specified range: %s in spreadsheet with id: \'%s\'' % (batch_id, range_names[0], self.gapi.get_id()))
                 update_sheet = False
                 pass
 
-        ## initialize row for updating spreadsheet
-        #status_row = collections.OrderedDict()
-        #for i in col_head:
-        #    status_row[i] = '(null)'
 
         ## criteria to parse and extract info from output of get_status query
         l_common = [ r'(?P<vbstatus>[A-Z])\,', r'(?P<fmsg1>START TIME:)', r'(?P<vbstime>[0-9\/\:\ ]+)\,', r'(?P<fmsg2>COMPLETION TIME:)', r'(?P<vbetime>[0-9\/\:\ ]+)' ]
@@ -158,11 +167,12 @@ class updater(object):
 
             ## loop over all rows that need update
             for tid in self.upd_tids:
-
+                ## message user or not
+                msg_on_state = False
                 ## run command (get_status)
-                cmd = [ 'sqlplus', '-S', 'apps/apps', '@'+ os.path.join(self.sql_path, 'get_status.sql'), str(tid) ]
+                cmd = [ 'sqlplus', '-S', 'apps/apps', '@'+ os.path.join(self.sql_path, 'get_status.sql'), str(tid[0]) ]
                 self.log.debug(' '.join(cmd))
-                self.log.info('Processing Request Set ID: %s' % tid)
+                self.log.info('Processing Request Set ID: %s' % tid[0])
                 (out, err, p) =  os_system_command( ' '.join(cmd), self.run_env)
                 update_tidrow = False
                 if not p.returncode == 0:
@@ -170,7 +180,7 @@ class updater(object):
                     continue
                 else:
                     ## parse and get data to update
-                    upd_defaults = { 'rqstatus':'PROCFAIL', 'vbstatus':'(null)', 'vbstime':'(null)',
+                    upd_defaults = { 'rqstatus':'UNKNOWN', 'vbstatus':'UNKNOWN', 'vbstime':'(null)',
                             'vbetime':'(null)', 'tbstatus':'(null)', 'tbstime':'(null)', 'tbetime':'(null)' }
 
                     for line in out.split('\n'):
@@ -187,15 +197,24 @@ class updater(object):
                                 if key in req_fields:
                                     upd_defaults.update( { key:m_tb[key] } )
 
+
+                    if upd_defaults['vbstatus'] == 'R' or upd_defaults['tbstatus'] == 'R':
+                        continue
+                    elif upd_defaults['vbstatus'] == 'UNKNOWN' or upd_defaults['tbstatus'] == 'UNKNOWN':
+                        continue
+                    else:
+                        msg_on_state = True
+
+                    ## get the status
                     upd_defaults['rqstatus'] = self.msg_type [ upd_defaults['vbstatus'] == 'C' and upd_defaults['tbstatus'] == 'C' ]
 
 
                     ## first get row for this tid
                     try:
-                        row_num = result.get('valueRanges')[0].get('values')[0].index(int(tid)) + 1
+                        row_num = result.get('valueRanges')[0].get('values')[0].index(int(tid[0])) + 1
                         update_tidrow = True
                     except ValueError:
-                        self.log.error('Could not find batch_id = %d in specified range: %s in spreadsheet with id: \'%s\'' % (tid, range_names[0], self.gapi.get_id()))
+                        self.log.error('Could not find batch_id = %d in specified range: %s in spreadsheet with id: \'%s\'' % (tid[0], range_names[0], self.gapi.get_id()))
                         pass
 
                     ## parse and get data to update
@@ -208,7 +227,7 @@ class updater(object):
                             valueRenderOption = 'UNFORMATTED_VALUE' ).execute()
 
                         if not res_tid.get('valueRanges')[0].has_key(u'values'):
-                            self.log.error('Could not update row %d for batch_id = %d in spreadsheet with id: \'%s\'' % (row_num, tid, range_names[0], self.gapi.get_id()))
+                            self.log.error('Could not update row %d for request_id = %d in spreadsheet with id: \'%s\'' % (row_num, tid[0], range_names[0], self.gapi.get_id()))
                         else:
                             update_row = res_tid.get(u'valueRanges')[0].get(u'values')[0]
                             status_row = collections.OrderedDict( zip(col_head, update_row))
@@ -233,6 +252,15 @@ class updater(object):
                                 spreadsheetId = self.gapi.get_id(),
                                 body = body_update).execute()
 
+                        if msg_on_state:
+                            ## get user's phone number
+                            sql = 'SELECT phone from authuser where uname = \'%s\' and verified = 1;' % tid[2]
+                            phno = self.db.fetchdict(sql)['phone']
+
+                            ## message the user
+                            if not phno == None:
+                                msg_body = '\nValidate: %s  Transfer:%s for request_id %s: \n' % ( upd_defaults['vbstatus'], upd_defaults['tbstatus'], tid[0])
+                                self.notifier.message('vt_notify_status', msg_body, phno)
 
                     self.log.info('\n'+('-'*20)+'\n'+out)
 

@@ -134,11 +134,11 @@ ________________________________________________________________________________
                 sys.stderr.write( '%-25s: %s\n' % (j, qq[j]))
 
 
-    def message(self, msg_header, msg_body):
+    def message(self, msg_header, msg_body, tophone = None):
 
         if msg_header in self.incidents.keys() and self.incidents[msg_header] != None and self.messages:
             try:
-                message = self.client.messages.create( body= msg_body, to = str(self.tel['to_number']), from_ = self.tel['from_number'])
+                message = self.client.messages.create( body= msg_body, to = str(self.tel['to_number']) if tophone == None else str(tophone), from_ = self.tel['from_number'])
                 self.log.info('%s: message sent to recipient, body = \"%s\"' % (msg_header, msg_body))
             except twilio.TwilioRestException as err:
                 self.log.error(msg_body)
